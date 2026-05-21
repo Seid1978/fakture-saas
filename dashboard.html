@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Fakture Pro Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: #e5e7eb;
+        }
+
+        /* SIDEBAR */
+        .sidebar {
+            width: 220px;
+            height: 100vh;
+            position: fixed;
+            background: #111827;
+            padding: 20px;
+        }
+
+        .sidebar h2 {
+            color: #60a5fa;
+        }
+
+        .sidebar p {
+            color: #9ca3af;
+            font-size: 14px;
+        }
+
+        /* MAIN */
+        .main {
+            margin-left: 240px;
+            padding: 20px;
+        }
+
+        h1 {
+            margin-top: 0;
+        }
+
+        /* CARDS */
+        .cards {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            flex: 1;
+            background: #1f2937;
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        }
+
+        .card h3 {
+            margin: 0;
+            font-size: 14px;
+            color: #9ca3af;
+        }
+
+        .card p {
+            font-size: 22px;
+            margin: 10px 0 0 0;
+            color: white;
+        }
+
+        /* SEARCH */
+        .search input {
+            width: 300px;
+            padding: 10px;
+            border-radius: 8px;
+            border: none;
+            outline: none;
+            margin-bottom: 15px;
+        }
+
+        /* TABLE */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #1f2937;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        th {
+            background: #111827;
+            text-align: left;
+            padding: 12px;
+            color: #9ca3af;
+        }
+
+        td {
+            padding: 12px;
+            border-top: 1px solid #374151;
+        }
+
+        tr:hover {
+            background: #111827;
+            cursor: pointer;
+        }
+
+        /* CHART */
+        .chart-box {
+            margin-top: 20px;
+            background: #1f2937;
+            padding: 15px;
+            border-radius: 12px;
+        }
+
+        .btn {
+            padding: 8px 12px;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        .btn:hover {
+            background: #1d4ed8;
+        }
+    </style>
+</head>
+
+<body>
+
+<!-- SIDEBAR -->
+<div class="sidebar">
+    <h2>📊 Fakture Pro</h2>
+    <p>AI Invoice System</p>
+    <hr style="border:1px solid #374151;">
+    <p>Dashboard</p>
+    <p>Fakture</p>
+    <p>Analytics</p>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+    <h1>Dashboard</h1>
+
+    <!-- CARDS -->
+    <div class="cards">
+        <div class="card">
+            <h3>Total Zarada</h3>
+            <p id="total">0</p>
+        </div>
+
+        <div class="card">
+            <h3>Broj Faktura</h3>
+            <p id="count">0</p>
+        </div>
+    </div>
+
+    <!-- SEARCH -->
+    <div class="search">
+        <input type="text" id="searchInput" placeholder="🔍 Search..." onkeyup="filterTable()">
+        <button class="btn" onclick="loadAll()">Reload</button>
+    </div>
+
+    <!-- CHART -->
+    <div class="chart-box">
+        <canvas id="incomeChart"></canvas>
+    </div>
+
+    <!-- TABLE -->
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Filename</th>
+                <th>Klijent</th>
+                <th>Cijena</th>
+                <th>Datum</th>
+            </tr>
+        </thead>
+        <tbody id="data"></tbody>
+    </table>
+
+</div>
+
+<script>
+
+let allData = [];
+let chart;
+
+async function loadAll() {
+
+    const res = await fetch("http://127.0.0.1:8000/fakture");
+    const data = await res.json();
+
+    allData = data.fakture;
+
+    renderTable(allData);
+    renderChart(allData);
+
+    const t = await fetch("http://127.0.0.1:8000/fakture/total");
+    const total = await t.json();
+
+    document.getElementById("total").innerText = total.total_zarada;
+    document.getElementById("count").innerText = total.broj_faktura;
+}
+
+function renderTable(dataArr) {
+
+    let rows = "";
+
+    dataArr.forEach(f => {
+        rows += `
+            <tr onclick="openFacture(${f.id})">
+                <td>${f.id}</td>
+                <td>${f.filename}</td>
+                <td>${f.klijent || ""}</td>
+                <td>${f.cijena || ""}</td>
+                <td>${f.datum || ""}</td>
+            </tr>
+        `;
+    });
+
+    document.getElementById("data").innerHTML = rows;
+}
+
+function filterTable() {
+
+    let value = document.getElementById("searchInput").value.toLowerCase();
+
+    let filtered = allData.filter(f =>
+        (f.klijent || "").toLowerCase().includes(value) ||
+        (f.filename || "").toLowerCase().includes(value) ||
+        (f.datum || "").toLowerCase().includes(value)
+    );
+
+    renderTable(filtered);
+    renderChart(filtered);
+}
+
+function renderChart(dataArr) {
+
+    const labels = dataArr.map(f => f.filename);
+    const values = dataArr.map(f => parseFloat(f.cijena || 0));
+
+    const ctx = document.getElementById('incomeChart').getContext('2d');
+
+    if (chart) chart.destroy();
+
+    chart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Cijena po fakturi',
+                data: values
+            }]
+        }
+    });
+}
+
+function openFacture(id) {
+    window.open(`http://127.0.0.1:8000/fakture/${id}`, "_blank");
+}
+
+loadAll();
+
+</script>
+
+</body>
+</html>

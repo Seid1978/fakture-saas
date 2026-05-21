@@ -1,0 +1,18 @@
+
+===== FAKTURA =====
+Datum: 20.05.2026
+Klijent: dir
+Cijena: 200.0
+PDV (17%): 34.0
+UKUPNO: 234.0
+
+
+
+===== FAKTURA =====
+Datum: 20.05.2026
+Klijent: Marko
+Cijena: 200.0
+PDV (17%): 34.0
+UKUPNO: 234.0
+
+
