@@ -1,299 +1,180 @@
-from fastapi import FastAPI, File, UploadFile
-import os
+from fastapi import FastAPI, Path
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+
+from pydantic import BaseModel, Field
+from typing import List
+
 import sqlite3
+import json
 
-from pdf_parser import extract_text_from_pdf
-from database import init_db, save_invoice
-from ai_parser import extract_data
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
+# -----------------------
+# APP SETUP
+# -----------------------
 app = FastAPI()
 
-UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# INIT DB
-init_db()
+# -----------------------
+# DATABASE
+# -----------------------
+conn = sqlite3.connect("fakture.db", check_same_thread=False)
+cursor = conn.cursor()
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_no INTEGER,
+    client TEXT,
+    total REAL,
+    items TEXT
+)
+""")
 
-# -------------------------
+conn.commit()
+
+# -----------------------
+# MODELS
+# -----------------------
+class Item(BaseModel):
+    name: str = Field(..., min_length=1)
+    quantity: int = Field(..., gt=0)
+    price: float = Field(..., gt=0)
+
+class Invoice(BaseModel):
+    client: str = Field(..., min_length=1)
+    items: List[Item]
+
+# -----------------------
 # ROOT
-# -------------------------
+# -----------------------
 @app.get("/")
 def root():
-    return {"message": "API radi 🚀"}
+    return {"message": "Fakture API radi 🚀"}
 
+# -----------------------
+# CREATE INVOICE
+# -----------------------
+@app.post("/invoice")
+def create_invoice(invoice: Invoice):
+    total = sum(i.quantity * i.price for i in invoice.items)
+    items_json = json.dumps([i.dict() for i in invoice.items])
 
-# -------------------------
-# UPLOAD + AI PARSING
-# -------------------------
-@app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-
-    with open(file_path, "wb") as f:
-        f.write(await file.read())
-
-    text = extract_text_from_pdf(file_path)
-    data = extract_data(text)
-
-    save_invoice(
-        file.filename,
-        text,
-        data.get("datum"),
-        data.get("cijena"),
-        data.get("klijent")
-    )
-
-    return {
-        "filename": file.filename,
-        "status": "saved",
-        "data": data
-    }
-
-
-# -------------------------
-# SVE FAKTURE
-# -------------------------
-@app.get("/fakture")
-def get_fakture():
-    conn = sqlite3.connect("faktura.db")
-    cursor = conn.cursor()
+    cursor.execute("SELECT MAX(invoice_no) FROM invoices")
+    last = cursor.fetchone()[0]
+    next_no = 1 if last is None else last + 1
 
     cursor.execute("""
-        SELECT id, filename, content, datum, cijena, klijent
-        FROM fakture
-        ORDER BY id DESC
-    """)
+        INSERT INTO invoices (invoice_no, client, total, items)
+        VALUES (?, ?, ?, ?)
+    """, (next_no, invoice.client, total, items_json))
 
-    rows = cursor.fetchall()
-    conn.close()
+    conn.commit()
 
     return {
-        "total": len(rows),
-        "fakture": [
+        "status": "created",
+        "invoice_no": next_no,
+        "client": invoice.client,
+        "total": total
+    }
+
+# -----------------------
+# READ INVOICES
+# -----------------------
+@app.get("/invoices")
+def get_invoices():
+    cursor.execute("SELECT * FROM invoices")
+    rows = cursor.fetchall()
+
+    return {
+        "count": len(rows),
+        "invoices": [
             {
                 "id": r[0],
-                "filename": r[1],
-                "datum": r[3],
-                "cijena": r[4],
-                "klijent": r[5],
-                "preview": r[2][:120] if r[2] else ""
+                "invoice_no": r[1],
+                "client": r[2],
+                "total": r[3]
             }
             for r in rows
         ]
     }
 
-
-# -------------------------
-# SEARCH
-# -------------------------
-@app.get("/fakture/search")
-def search_fakture(query: str):
-    conn = sqlite3.connect("faktura.db")
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT id, filename, content, datum, cijena, klijent
-        FROM fakture
-        WHERE content LIKE ?
-        ORDER BY id DESC
-    """, (f"%{query}%",))
-
-    rows = cursor.fetchall()
-    conn.close()
-
-    return {
-        "query": query,
-        "results": [
-            {
-                "id": r[0],
-                "filename": r[1],
-                "datum": r[3],
-                "cijena": r[4],
-                "klijent": r[5]
-            }
-            for r in rows
-        ]
-    }
-
-
-# -------------------------
-# FILTER PO KLIJENTU
-# -------------------------
-@app.get("/fakture/filter")
-def filter_fakture(klijent: str):
-    conn = sqlite3.connect("faktura.db")
-    cursor = conn.cursor()
+# -----------------------
+# UPDATE INVOICE
+# -----------------------
+@app.put("/invoice/{invoice_id}")
+def update_invoice(invoice_id: int, invoice: Invoice):
+    total = sum(i.quantity * i.price for i in invoice.items)
+    items_json = json.dumps([i.dict() for i in invoice.items])
 
     cursor.execute("""
-        SELECT id, filename, content, datum, cijena, klijent
-        FROM fakture
-        WHERE klijent LIKE ?
-        ORDER BY id DESC
-    """, (f"%{klijent}%",))
-
-    rows = cursor.fetchall()
-    conn.close()
-
-    return {
-        "klijent": klijent,
-        "total": len(rows),
-        "fakture": [
-            {
-                "id": r[0],
-                "filename": r[1],
-                "datum": r[3],
-                "cijena": r[4],
-                "klijent": r[5]
-            }
-            for r in rows
-        ]
-    }
-
-
-# -------------------------
-# TOTAL ZARADA
-# -------------------------
-@app.get("/fakture/total")
-def total_zarada():
-    conn = sqlite3.connect("faktura.db")
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT cijena FROM fakture")
-    rows = cursor.fetchall()
-    conn.close()
-
-    total = 0.0
-
-    for r in rows:
-        try:
-            if r[0]:
-                total += float(r[0])
-        except:
-            pass
-
-    return {
-        "total_zarada": total,
-        "broj_faktura": len(rows)
-    }
-
-
-# -------------------------
-# DETAIL FAKTURE
-# -------------------------
-@app.get("/fakture/{faktura_id}")
-def get_faktura(faktura_id: int):
-    conn = sqlite3.connect("faktura.db")
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT id, filename, content, datum, cijena, klijent
-        FROM fakture
+        UPDATE invoices
+        SET client = ?, total = ?, items = ?
         WHERE id = ?
-    """, (faktura_id,))
+    """, (invoice.client, total, items_json, invoice_id))
 
-    r = cursor.fetchone()
-    conn.close()
-
-    if not r:
-        return {"error": "Not found"}
+    conn.commit()
 
     return {
-        "id": r[0],
-        "filename": r[1],
-        "datum": r[3],
-        "cijena": r[4],
-        "klijent": r[5],
-        "content": r[2]
+        "status": "updated",
+        "id": invoice_id,
+        "client": invoice.client,
+        "total": total
     }
 
+# -----------------------
+# DELETE INVOICE
+# -----------------------
+@app.delete("/invoice/{invoice_id}")
+def delete_invoice(invoice_id: int):
+    cursor.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
+    conn.commit()
 
-# -------------------------
-# KLIJENT ANALYTICS (TOTAL + COUNT)
-# -------------------------
-@app.get("/fakture/klijenti/analytics")
-def klijent_analytics():
-    conn = sqlite3.connect("faktura.db")
-    cursor = conn.cursor()
+    return {"status": "deleted", "id": invoice_id}
 
-    cursor.execute("""
-        SELECT klijent,
-               SUM(CAST(cijena AS REAL)),
-               COUNT(*)
-        FROM fakture
-        GROUP BY klijent
-    """)
+# -----------------------
+# PDF GENERATOR
+# -----------------------
+@app.get("/invoice/pdf/{invoice_id}")
+def generate_pdf(invoice_id: int = Path(...)):
+    cursor.execute("SELECT * FROM invoices WHERE id = ?", (invoice_id,))
+    row = cursor.fetchone()
 
-    rows = cursor.fetchall()
-    conn.close()
+    if not row:
+        return {"error": "Invoice not found"}
 
-    return {
-        "data": [
-            {
-                "klijent": r[0],
-                "total": r[1] if r[1] else 0,
-                "broj_faktura": r[2]
-            }
-            for r in rows
-        ]
-    }
+    invoice_no = row[1]
+    client = row[2]
+    total = row[3]
+    items = json.loads(row[4])
 
+    file_name = f"invoice_{invoice_id}.pdf"
+    c = canvas.Canvas(file_name, pagesize=letter)
 
-# -------------------------
-# MONTHLY ANALYTICS
-# -------------------------
-@app.get("/fakture/analytics/monthly")
-def monthly_analytics():
-    conn = sqlite3.connect("faktura.db")
-    cursor = conn.cursor()
+    c.drawString(100, 750, "FAKTURA")
+    c.drawString(100, 730, f"Invoice No: {invoice_no}")
+    c.drawString(100, 710, f"Client: {client}")
 
-    cursor.execute("""
-        SELECT substr(datum, 1, 7) as mjesec,
-               SUM(CAST(cijena AS REAL))
-        FROM fakture
-        GROUP BY mjesec
-        ORDER BY mjesec
-    """)
+    y = 670
+    c.drawString(100, y, "Items:")
+    y -= 20
 
-    rows = cursor.fetchall()
-    conn.close()
+    for item in items:
+        line = f"{item['name']} x{item['quantity']} = {item['price'] * item['quantity']}"
+        c.drawString(100, y, line)
+        y -= 20
 
-    return {
-        "data": [
-            {
-                "mjesec": r[0],
-                "total": r[1] if r[1] else 0
-            }
-            for r in rows
-        ]
-    }
+    c.drawString(100, y - 20, f"TOTAL: {total}")
 
+    c.save()
 
-# -------------------------
-# TOP CLIENTS (RANKING)
-# -------------------------
-@app.get("/fakture/analytics/top-clients")
-def top_clients():
-    conn = sqlite3.connect("faktura.db")
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT klijent,
-               SUM(CAST(cijena AS REAL)) as total
-        FROM fakture
-        GROUP BY klijent
-        ORDER BY total DESC
-    """)
-
-    rows = cursor.fetchall()
-    conn.close()
-
-    return {
-        "data": [
-            {
-                "klijent": r[0],
-                "total": r[1]
-            }
-            for r in rows
-        ]
-    }
+    return FileResponse(file_name, media_type="application/pdf")
