@@ -5,7 +5,7 @@ import sqlite3
 app = FastAPI()
 
 # ---------------------------
-# CORS (React access)
+# CORS (React frontend access)
 # ---------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -15,11 +15,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+DB_NAME = "faktura.db"
+
 # ---------------------------
-# INIT DATABASE (IMPORTANT FOR RENDER)
+# DB CONNECTION
+# ---------------------------
+def get_db():
+    conn = sqlite3.connect(DB_NAME)
+    return conn
+
+# ---------------------------
+# INIT DB (SAFE FOR RENDER)
 # ---------------------------
 def init_db():
-    conn = sqlite3.connect("faktura.db")
+    conn = get_db()
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -44,11 +53,9 @@ def create_invoice(data: dict):
     client = data["client"]
     items = data["items"]
 
-    total = 0
-    for item in items:
-        total += item["quantity"] * item["price"]
+    total = sum(item["quantity"] * item["price"] for item in items)
 
-    conn = sqlite3.connect("faktura.db")
+    conn = get_db()
     cursor = conn.cursor()
 
     cursor.execute(
@@ -74,35 +81,42 @@ def create_invoice(data: dict):
 @app.get("/invoices")
 def get_invoices():
     try:
-        conn = sqlite3.connect("faktura.db")
+        conn = get_db()
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        cursor.execute("SELECT invoice_no, client, total FROM invoices")
-        rows = cursor.fetchall()
+        cursor.execute("""
+            SELECT invoice_no, client, total
+            FROM invoices
+            ORDER BY invoice_no DESC
+        """)
 
+        rows = cursor.fetchall()
         conn.close()
 
         return {
             "count": len(rows),
             "invoices": [
                 {
-                    "invoice_no": r[0],
-                    "client": r[1],
-                    "total": r[2]
+                    "invoice_no": row["invoice_no"],
+                    "client": row["client"],
+                    "total": row["total"]
                 }
-                for r in rows
+                for row in rows
             ]
         }
 
     except Exception as e:
-        return {"error": str(e)}
+        return {
+            "error": str(e)
+        }
 
 # ---------------------------
-# SIMPLE PDF (HTML OUTPUT)
+# SIMPLE PDF (HTML VIEW)
 # ---------------------------
 @app.get("/invoice/pdf/{invoice_id}")
 def get_invoice_pdf(invoice_id: int):
-    conn = sqlite3.connect("faktura.db")
+    conn = get_db()
     cursor = conn.cursor()
 
     cursor.execute(
@@ -118,7 +132,7 @@ def get_invoice_pdf(invoice_id: int):
 
     return f"""
     <html>
-        <body style="font-family:Arial;">
+        <body style="font-family: Arial; padding: 20px;">
             <h1>FAKTURA</h1>
             <p><b>Invoice No:</b> {row[0]}</p>
             <p><b>Client:</b> {row[1]}</p>
