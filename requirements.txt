@@ -5,6 +5,8 @@ sqlalchemy
 pydantic
 
 passlib[bcrypt]
-python-jose[cryptography]
+
+python-jose
+cryptography
 
 reportlab
