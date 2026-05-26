@@ -1,12 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Depends, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
-import sqlite3
+from pydantic import BaseModel
+from jose import jwt, JWTError
+from datetime import datetime, timedelta
+from io import BytesIO
+from reportlab.pdfgen import canvas
 
 app = FastAPI()
 
-# ---------------------------
-# CORS (React frontend access)
-# ---------------------------
+# -------------------
+# CORS
+# -------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,128 +19,169 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_NAME = "faktura.db"
+# -------------------
+# JWT CONFIG
+# -------------------
+SECRET_KEY = "supersecretkey123"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-# ---------------------------
-# DB CONNECTION
-# ---------------------------
-def get_db():
-    conn = sqlite3.connect(DB_NAME)
-    return conn
+# -------------------
+# FAKE DATABASE
+# -------------------
+invoices = []
+invoice_id_counter = 1
 
-# ---------------------------
-# INIT DB (SAFE FOR RENDER)
-# ---------------------------
-def init_db():
-    conn = get_db()
-    cursor = conn.cursor()
+# -------------------
+# MODELS
+# -------------------
+class Invoice(BaseModel):
+    client: str
+    amount: float
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS invoices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            invoice_no INTEGER,
-            client TEXT,
-            total REAL
-        )
-    """)
+class LoginData(BaseModel):
+    username: str
+    password: str
 
-    conn.commit()
-    conn.close()
 
-init_db()
+# -------------------
+# JWT CREATE
+# -------------------
+def create_token(data: dict):
+    payload = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload.update({"exp": expire})
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
-# ---------------------------
-# CREATE INVOICE
-# ---------------------------
-@app.post("/invoice")
-def create_invoice(data: dict):
-    client = data["client"]
-    items = data["items"]
 
-    total = sum(item["quantity"] * item["price"] for item in items)
+# -------------------
+# AUTH CHECK
+# -------------------
+def get_current_user(authorization: str = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="No token")
 
-    conn = get_db()
-    cursor = conn.cursor()
+    try:
+        token = authorization.replace("Bearer ", "")
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
 
-    cursor.execute(
-        "INSERT INTO invoices (client, total) VALUES (?, ?)",
-        (client, total)
-    )
+        user = payload.get("sub")
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid token")
 
-    invoice_no = cursor.lastrowid
+        return user
 
-    conn.commit()
-    conn.close()
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token invalid or expired")
 
-    return {
-        "status": "created",
-        "invoice_no": invoice_no,
-        "client": client,
-        "total": total
+
+# -------------------
+# LOGIN
+# -------------------
+@app.post("/login")
+def login(data: LoginData):
+    if data.username == "Marko" and data.password == "1234":
+        token = create_token({"sub": data.username})
+        return {"access_token": token, "token_type": "bearer"}
+
+    raise HTTPException(status_code=401, detail="Invalid login")
+
+
+# -------------------
+# GET INVOICES (SAAS)
+# -------------------
+@app.get("/invoices")
+def get_invoices(user: str = Depends(get_current_user)):
+    return [inv for inv in invoices if inv["owner"] == user]
+
+
+# -------------------
+# CREATE INVOICE (SAAS)
+# -------------------
+@app.post("/invoices")
+def create_invoice(invoice: Invoice, user: str = Depends(get_current_user)):
+    global invoice_id_counter
+
+    new_invoice = {
+        "id": invoice_id_counter,
+        "client": invoice.client,
+        "amount": invoice.amount,
+        "owner": user
     }
 
-# ---------------------------
-# GET ALL INVOICES (DASHBOARD)
-# ---------------------------
-@app.get("/invoices")
-def get_invoices():
-    try:
-        conn = get_db()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+    invoices.append(new_invoice)
+    invoice_id_counter += 1
 
-        cursor.execute("""
-            SELECT invoice_no, client, total
-            FROM invoices
-            ORDER BY invoice_no DESC
-        """)
+    return new_invoice
 
-        rows = cursor.fetchall()
-        conn.close()
 
-        return {
-            "count": len(rows),
-            "invoices": [
-                {
-                    "invoice_no": row["invoice_no"],
-                    "client": row["client"],
-                    "total": row["total"]
-                }
-                for row in rows
-            ]
-        }
+# -------------------
+# DELETE INVOICE (SAAS)
+# -------------------
+@app.delete("/invoices/{invoice_id}")
+def delete_invoice(invoice_id: int, user: str = Depends(get_current_user)):
+    global invoices
 
-    except Exception as e:
-        return {
-            "error": str(e)
-        }
+    invoices = [
+        inv for inv in invoices
+        if not (inv["id"] == invoice_id and inv["owner"] == user)
+    ]
 
-# ---------------------------
-# SIMPLE PDF (HTML VIEW)
-# ---------------------------
-@app.get("/invoice/pdf/{invoice_id}")
-def get_invoice_pdf(invoice_id: int):
-    conn = get_db()
-    cursor = conn.cursor()
+    return {"message": "Deleted"}
 
-    cursor.execute(
-        "SELECT invoice_no, client, total FROM invoices WHERE invoice_no=?",
-        (invoice_id,)
+
+# -------------------
+# PDF DOWNLOAD (SAAS)
+# -------------------
+@app.get("/invoices/{invoice_id}/pdf")
+def generate_pdf(invoice_id: int, user: str = Depends(get_current_user)):
+    invoice = next(
+        (i for i in invoices if i["id"] == invoice_id and i["owner"] == user),
+        None
     )
 
-    row = cursor.fetchone()
-    conn.close()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
 
-    if not row:
-        return {"error": "Invoice not found"}
+    buffer = BytesIO()
+    p = canvas.Canvas(buffer)
 
-    return f"""
-    <html>
-        <body style="font-family: Arial; padding: 20px;">
-            <h1>FAKTURA</h1>
-            <p><b>Invoice No:</b> {row[0]}</p>
-            <p><b>Client:</b> {row[1]}</p>
-            <p><b>Total:</b> {row[2]}</p>
-        </body>
-    </html>
-    """
+    p.setFont("Helvetica-Bold", 18)
+    p.drawString(100, 800, "INVOICE")
+
+    p.setFont("Helvetica", 12)
+    p.drawString(100, 760, f"Invoice ID: {invoice['id']}")
+    p.drawString(100, 740, f"Client: {invoice['client']}")
+    p.drawString(100, 720, f"Amount: {invoice['amount']} €")
+    p.drawString(100, 700, f"Owner: {user}")
+
+    p.showPage()
+    p.save()
+
+    buffer.seek(0)
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=invoice_{invoice_id}.pdf"
+        }
+    )
+
+
+# -------------------
+# STATS (SAAS DASHBOARD)
+# -------------------
+@app.get("/stats")
+def get_stats(user: str = Depends(get_current_user)):
+    user_invoices = [inv for inv in invoices if inv["owner"] == user]
+
+    total_invoices = len(user_invoices)
+    total_revenue = sum(inv["amount"] for inv in user_invoices)
+    avg_invoice = total_revenue / total_invoices if total_invoices > 0 else 0
+
+    return {
+        "total_invoices": total_invoices,
+        "total_revenue": total_revenue,
+        "avg_invoice": avg_invoice
+    }

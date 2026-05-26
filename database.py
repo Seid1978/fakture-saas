@@ -1,35 +1,41 @@
-import sqlite3
+from sqlalchemy import create_engine, Column, Integer, String, Float
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-DB_NAME = "faktura.db"
+# ----------------------
+# DATABASE
+# ----------------------
+DATABASE_URL = "sqlite:///./invoices.db"
 
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False}
+)
 
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS fakture (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename TEXT,
-            content TEXT,
-            datum TEXT,
-            cijena TEXT,
-            klijent TEXT
-        )
-    """)
-
-    conn.commit()
-    conn.close()
+Base = declarative_base()
 
 
-def save_invoice(filename, content, datum=None, cijena=None, klijent=None):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
+# ----------------------
+# USERS TABLE
+# ----------------------
+class User(Base):
+    __tablename__ = "users"
 
-    cursor.execute("""
-        INSERT INTO fakture (filename, content, datum, cijena, klijent)
-        VALUES (?, ?, ?, ?, ?)
-    """, (filename, content, datum, cijena, klijent))
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    password = Column(String)
 
-    conn.commit()
-    conn.close()
+
+# ----------------------
+# INVOICES TABLE (USER-BASED)
+# ----------------------
+class Invoice(Base):
+    __tablename__ = "invoices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client = Column(String, index=True)
+    amount = Column(Float)
+
+    # 👇 LINK NA USERA (SAAAS CORE)
+    user_id = Column(Integer, index=True)

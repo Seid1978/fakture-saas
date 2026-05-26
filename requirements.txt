@@ -1,4 +1,10 @@
 fastapi
-uvicorn
-reportlab
+uvicorn[standard]
+
+sqlalchemy
+
 pydantic
+
+passlib[bcrypt]
+
+python-jose[cryptography]
