@@ -2,9 +2,9 @@ fastapi
 uvicorn[standard]
 
 sqlalchemy
-
 pydantic
 
 passlib[bcrypt]
-
 python-jose[cryptography]
+
+reportlab
