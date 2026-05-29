@@ -20,9 +20,12 @@ from pydantic import BaseModel
 # --------------------
 app = FastAPI()
 
+# --------------------
+# CORS (frontend access)
+# --------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # u production stavi frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,6 +35,13 @@ app.add_middleware(
 # DB INIT
 # --------------------
 Base.metadata.create_all(bind=engine)
+
+# --------------------
+# ROOT ROUTE
+# --------------------
+@app.get("/")
+def root():
+    return {"message": "Fakture SaaS API is running 🚀"}
 
 # --------------------
 # SCHEMAS
@@ -80,7 +90,7 @@ def register(user: RegisterSchema, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
 
-    return {"message": "User created"}
+    return {"message": "User created successfully"}
 
 # --------------------
 # LOGIN
@@ -97,7 +107,7 @@ def login(user: LoginSchema, db: Session = Depends(get_db)):
     return {"access_token": token}
 
 # --------------------
-# GET INVOICES (ONLY OWNER)
+# GET INVOICES
 # --------------------
 @app.get("/invoices", response_model=List[InvoiceOut])
 def get_invoices(

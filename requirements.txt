@@ -5,11 +5,10 @@ sqlalchemy
 psycopg2-binary
 
 python-jose[cryptography]
-passlib[bcrypt]
 
 python-multipart
 
-pdfplumber
-pdfminer.six
+pypdf
 
-pydantic
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
