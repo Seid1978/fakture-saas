@@ -1,16 +1,25 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, Response
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from jose import jwt, JWTError
-from datetime import datetime, timedelta
-from io import BytesIO
-from reportlab.pdfgen import canvas
+from sqlalchemy.orm import Session
+from typing import List
 
+import models
+from database import engine, Base, get_db
+
+from auth import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    get_current_user,
+)
+
+from pydantic import BaseModel
+
+# --------------------
+# APP
+# --------------------
 app = FastAPI()
 
-# -------------------
-# CORS
-# -------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,169 +28,153 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------------------
-# JWT CONFIG
-# -------------------
-SECRET_KEY = "supersecretkey123"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+# --------------------
+# DB INIT
+# --------------------
+Base.metadata.create_all(bind=engine)
 
-# -------------------
-# FAKE DATABASE
-# -------------------
-invoices = []
-invoice_id_counter = 1
-
-# -------------------
-# MODELS
-# -------------------
-class Invoice(BaseModel):
-    client: str
-    amount: float
-
-class LoginData(BaseModel):
-    username: str
+# --------------------
+# SCHEMAS
+# --------------------
+class RegisterSchema(BaseModel):
+    email: str
     password: str
 
+class LoginSchema(BaseModel):
+    email: str
+    password: str
 
-# -------------------
-# JWT CREATE
-# -------------------
-def create_token(data: dict):
-    payload = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload.update({"exp": expire})
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+class TokenSchema(BaseModel):
+    access_token: str
 
+class InvoiceCreate(BaseModel):
+    client: str
+    amount: int
+    status: str = "pending"
 
-# -------------------
-# AUTH CHECK
-# -------------------
-def get_current_user(authorization: str = Header(None)):
-    if not authorization:
-        raise HTTPException(status_code=401, detail="No token")
+class InvoiceOut(BaseModel):
+    id: int
+    client: str
+    amount: int
+    status: str
 
-    try:
-        token = authorization.replace("Bearer ", "")
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    class Config:
+        from_attributes = True
 
-        user = payload.get("sub")
-        if not user:
-            raise HTTPException(status_code=401, detail="Invalid token")
+# --------------------
+# REGISTER
+# --------------------
+@app.post("/register")
+def register(user: RegisterSchema, db: Session = Depends(get_db)):
+    existing = db.query(models.User).filter(models.User.email == user.email).first()
 
-        return user
+    if existing:
+        raise HTTPException(status_code=400, detail="User already exists")
 
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Token invalid or expired")
+    new_user = models.User(
+        email=user.email,
+        password=hash_password(user.password),
+    )
 
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
 
-# -------------------
+    return {"message": "User created"}
+
+# --------------------
 # LOGIN
-# -------------------
-@app.post("/login")
-def login(data: LoginData):
-    if data.username == "Marko" and data.password == "1234":
-        token = create_token({"sub": data.username})
-        return {"access_token": token, "token_type": "bearer"}
+# --------------------
+@app.post("/login", response_model=TokenSchema)
+def login(user: LoginSchema, db: Session = Depends(get_db)):
+    db_user = db.query(models.User).filter(models.User.email == user.email).first()
 
-    raise HTTPException(status_code=401, detail="Invalid login")
+    if not db_user or not verify_password(user.password, db_user.password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    token = create_access_token({"sub": db_user.email})
 
-# -------------------
-# GET INVOICES (SAAS)
-# -------------------
-@app.get("/invoices")
-def get_invoices(user: str = Depends(get_current_user)):
-    return [inv for inv in invoices if inv["owner"] == user]
+    return {"access_token": token}
 
+# --------------------
+# GET INVOICES (ONLY OWNER)
+# --------------------
+@app.get("/invoices", response_model=List[InvoiceOut])
+def get_invoices(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    return db.query(models.Invoice).filter(
+        models.Invoice.owner_id == user.id
+    ).all()
 
-# -------------------
-# CREATE INVOICE (SAAS)
-# -------------------
-@app.post("/invoices")
-def create_invoice(invoice: Invoice, user: str = Depends(get_current_user)):
-    global invoice_id_counter
+# --------------------
+# CREATE INVOICE
+# --------------------
+@app.post("/invoices", response_model=InvoiceOut)
+def create_invoice(
+    invoice: InvoiceCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    new_invoice = models.Invoice(
+        client=invoice.client,
+        amount=invoice.amount,
+        status=invoice.status,
+        owner_id=user.id
+    )
 
-    new_invoice = {
-        "id": invoice_id_counter,
-        "client": invoice.client,
-        "amount": invoice.amount,
-        "owner": user
-    }
-
-    invoices.append(new_invoice)
-    invoice_id_counter += 1
+    db.add(new_invoice)
+    db.commit()
+    db.refresh(new_invoice)
 
     return new_invoice
 
-
-# -------------------
-# DELETE INVOICE (SAAS)
-# -------------------
-@app.delete("/invoices/{invoice_id}")
-def delete_invoice(invoice_id: int, user: str = Depends(get_current_user)):
-    global invoices
-
-    invoices = [
-        inv for inv in invoices
-        if not (inv["id"] == invoice_id and inv["owner"] == user)
-    ]
-
-    return {"message": "Deleted"}
-
-
-# -------------------
-# PDF DOWNLOAD (SAAS)
-# -------------------
-@app.get("/invoices/{invoice_id}/pdf")
-def generate_pdf(invoice_id: int, user: str = Depends(get_current_user)):
-    invoice = next(
-        (i for i in invoices if i["id"] == invoice_id and i["owner"] == user),
-        None
-    )
+# --------------------
+# UPDATE INVOICE
+# --------------------
+@app.put("/invoices/{invoice_id}", response_model=InvoiceOut)
+def update_invoice(
+    invoice_id: int,
+    updated: InvoiceCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    invoice = db.query(models.Invoice).filter(
+        models.Invoice.id == invoice_id,
+        models.Invoice.owner_id == user.id
+    ).first()
 
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    buffer = BytesIO()
-    p = canvas.Canvas(buffer)
+    invoice.client = updated.client
+    invoice.amount = updated.amount
+    invoice.status = updated.status
 
-    p.setFont("Helvetica-Bold", 18)
-    p.drawString(100, 800, "INVOICE")
+    db.commit()
+    db.refresh(invoice)
 
-    p.setFont("Helvetica", 12)
-    p.drawString(100, 760, f"Invoice ID: {invoice['id']}")
-    p.drawString(100, 740, f"Client: {invoice['client']}")
-    p.drawString(100, 720, f"Amount: {invoice['amount']} €")
-    p.drawString(100, 700, f"Owner: {user}")
+    return invoice
 
-    p.showPage()
-    p.save()
+# --------------------
+# DELETE INVOICE
+# --------------------
+@app.delete("/invoices/{invoice_id}")
+def delete_invoice(
+    invoice_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    invoice = db.query(models.Invoice).filter(
+        models.Invoice.id == invoice_id,
+        models.Invoice.owner_id == user.id
+    ).first()
 
-    buffer.seek(0)
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
 
-    return Response(
-        content=buffer.getvalue(),
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"attachment; filename=invoice_{invoice_id}.pdf"
-        }
-    )
+    db.delete(invoice)
+    db.commit()
 
-
-# -------------------
-# STATS (SAAS DASHBOARD)
-# -------------------
-@app.get("/stats")
-def get_stats(user: str = Depends(get_current_user)):
-    user_invoices = [inv for inv in invoices if inv["owner"] == user]
-
-    total_invoices = len(user_invoices)
-    total_revenue = sum(inv["amount"] for inv in user_invoices)
-    avg_invoice = total_revenue / total_invoices if total_invoices > 0 else 0
-
-    return {
-        "total_invoices": total_invoices,
-        "total_revenue": total_revenue,
-        "avg_invoice": avg_invoice
-    }
+    return {"message": "Deleted successfully"}

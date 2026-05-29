@@ -2,11 +2,14 @@ fastapi
 uvicorn[standard]
 
 sqlalchemy
-pydantic
+psycopg2-binary
 
+python-jose[cryptography]
 passlib[bcrypt]
 
-python-jose
-cryptography
+python-multipart
 
-reportlab
+pdfplumber
+pdfminer.six
+
+pydantic
