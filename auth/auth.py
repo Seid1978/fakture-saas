@@ -1,33 +1,43 @@
+import os
+from datetime import datetime, timedelta
+
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models.models import User
-
-from passlib.context import CryptContext
 from jose import jwt, JWTError
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from passlib.context import CryptContext
 
-from datetime import datetime, timedelta
+from database import get_db
+from models.user import User
 
-# 🔐 CONFIG
-SECRET_KEY = "supersecretkey"
+
+# =========================
+# ENV CONFIG
+# =========================
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-router = APIRouter()
 
-# 🔐 HASHING (stable)
+router = APIRouter()
+security = HTTPBearer()
+
+
+# =========================
+# PASSWORD HASHING
+# =========================
 pwd_context = CryptContext(
     schemes=["pbkdf2_sha256"],
     deprecated="auto"
 )
 
-security = HTTPBearer()
 
-
-# 📦 SCHEMAS
+# =========================
+# SCHEMAS
+# =========================
 class RegisterRequest(BaseModel):
     email: str
     password: str
@@ -38,7 +48,9 @@ class LoginRequest(BaseModel):
     password: str
 
 
-# 🔑 CREATE TOKEN (WITH EXPIRY)
+# =========================
+# JWT CREATE
+# =========================
 def create_access_token(data: dict):
     to_encode = data.copy()
 
@@ -48,18 +60,22 @@ def create_access_token(data: dict):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-# 🔓 DECODE TOKEN (STRICT)
+# =========================
+# JWT DECODE
+# =========================
 def decode_token(token: str):
     try:
         return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
         raise HTTPException(
             status_code=401,
-            detail="Token expired or invalid"
+            detail="Invalid or expired token"
         )
 
 
-# 🚀 REGISTER
+# =========================
+# REGISTER
+# =========================
 @router.post("/register")
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
 
@@ -71,18 +87,22 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
 
     new_user = User(
         email=data.email,
-        password=hashed_password,
-        role="user"
+        hashed_password=hashed_password,
+        is_active=True,
+        is_premium=False,
+        invoice_count=0
     )
 
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
 
-    return {"message": "User created"}
+    return {"message": "User created successfully"}
 
 
-# 🔐 LOGIN
+# =========================
+# LOGIN
+# =========================
 @router.post("/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
 
@@ -91,13 +111,12 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    if not pwd_context.verify(data.password, user.password):
+    if not pwd_context.verify(data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = create_access_token({
         "id": user.id,
-        "sub": user.email,
-        "role": user.role
+        "email": user.email
     })
 
     return {
@@ -106,13 +125,15 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     }
 
 
-# 👤 CURRENT USER (SECURE)
+# =========================
+# CURRENT USER
+# =========================
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
-    token = credentials.credentials
 
+    token = credentials.credentials
     payload = decode_token(token)
 
     user = db.query(User).filter(User.id == payload["id"]).first()
@@ -123,30 +144,16 @@ def get_current_user(
     return user
 
 
-# 👤 /ME
+# =========================
+# /ME ENDPOINT
+# =========================
 @router.get("/me")
 def get_me(current_user: User = Depends(get_current_user)):
+
     return {
         "id": current_user.id,
         "email": current_user.email,
-        "role": current_user.role
+        "is_premium": current_user.is_premium,
+        "invoice_count": current_user.invoice_count,
+        "stripe_customer_id": current_user.stripe_customer_id
     }
-
-
-# 🔐 ROLE SYSTEM (SaaS READY)
-def require_role(role: str):
-    def checker(current_user: User = Depends(get_current_user)):
-
-        # admin always has access (SaaS pattern)
-        if current_user.role != "admin" and current_user.role != role:
-            raise HTTPException(status_code=403, detail="Forbidden")
-
-        return current_user
-
-    return checker
-
-
-# 🧪 ADMIN TEST ROUTE
-@router.get("/admin")
-def admin_only(user: User = Depends(require_role("admin"))):
-    return {"message": f"Welcome admin {user.email}"}

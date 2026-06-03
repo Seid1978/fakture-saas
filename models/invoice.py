@@ -1,74 +1,21 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy import Column, Integer, String, Float, ForeignKey
+from sqlalchemy.orm import relationship
 
-from database import get_db
-from models.invoice import Invoice
-
-router = APIRouter(prefix="/invoices", tags=["Invoices"])
+from database import Base
 
 
-# GET ALL INVOICES
-@router.get("/")
-def get_invoices(db: Session = Depends(get_db)):
-    return db.query(Invoice).all()
+class Invoice(Base):
+    __tablename__ = "invoices"
 
+    id = Column(Integer, primary_key=True, index=True)
 
-# GET SINGLE INVOICE
-@router.get("/{id}")
-def get_invoice(id: int, db: Session = Depends(get_db)):
-    invoice = db.query(Invoice).filter(Invoice.id == id).first()
+    client = Column(String, nullable=False)
+    amount = Column(Float, nullable=False)
+    status = Column(String, default="Pending")
+    date = Column(String, nullable=True)
 
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    # 🔗 owner (FK)
+    owner_id = Column(Integer, ForeignKey("users.id"))
 
-    return invoice
-
-
-# CREATE INVOICE
-@router.post("/")
-def create_invoice(data: dict, db: Session = Depends(get_db)):
-    new_invoice = Invoice(
-        client=data.get("client"),
-        amount=data.get("amount"),
-        status=data.get("status", "Pending"),
-        date=data.get("date")
-    )
-
-    db.add(new_invoice)
-    db.commit()
-    db.refresh(new_invoice)
-
-    return new_invoice
-
-
-# DELETE INVOICE
-@router.delete("/{id}")
-def delete_invoice(id: int, db: Session = Depends(get_db)):
-    invoice = db.query(Invoice).filter(Invoice.id == id).first()
-
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
-    db.delete(invoice)
-    db.commit()
-
-    return {"message": "Invoice deleted"}
-
-
-# UPDATE INVOICE (EDIT)
-@router.put("/{id}")
-def update_invoice(id: int, data: dict, db: Session = Depends(get_db)):
-    invoice = db.query(Invoice).filter(Invoice.id == id).first()
-
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
-    invoice.client = data.get("client", invoice.client)
-    invoice.amount = data.get("amount", invoice.amount)
-    invoice.status = data.get("status", invoice.status)
-    invoice.date = data.get("date", invoice.date)
-
-    db.commit()
-    db.refresh(invoice)
-
-    return invoice
+    # 🔥 relationship (BITNO ZA SAAS)
+    owner = relationship("User", back_populates="invoices")

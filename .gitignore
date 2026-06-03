@@ -10,16 +10,21 @@ __pycache__/
 # Virtual environment
 venv/
 env/
+.venv/
 
 # Database
 *.db
 *.sqlite3
 
+# Migrations (ako dodaš alembic kasnije)
+alembic/versions/*.pyc
+
 # Logs
 *.log
 
-# VS Code
+# IDE
 .vscode/
+.idea/
 
 # OS files
 .DS_Store
