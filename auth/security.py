@@ -15,9 +15,8 @@ ALGORITHM = "HS256"
 
 security = HTTPBearer()
 
-
 # =========================
-# DB SESSION
+# DB
 # =========================
 def get_db():
     db = SessionLocal()
@@ -26,20 +25,8 @@ def get_db():
     finally:
         db.close()
 
-
 # =========================
-# VERIFY TOKEN (LOW LEVEL)
-# =========================
-def verify_token(token: str):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload
-    except JWTError:
-        return None
-
-
-# =========================
-# GET CURRENT USER (MAIN DEPENDENCY)
+# CURRENT USER (CORE AUTH v2)
 # =========================
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -47,28 +34,19 @@ def get_current_user(
 ):
     token = credentials.credentials
 
-    payload = verify_token(token)
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("user_id")
 
-    if not payload:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid token"
-        )
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
 
-    user_id = payload.get("user_id")
-
-    if not user_id:
-        raise HTTPException(
-            status_code=401,
-            detail="Token missing user_id"
-        )
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
     user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="User not found"
-        )
+        raise HTTPException(status_code=404, detail="User not found")
 
     return user

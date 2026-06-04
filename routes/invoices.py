@@ -6,11 +6,11 @@ from models.invoice import Invoice
 from auth.auth import get_current_user
 from models.user import User
 
-router = APIRouter()
+router = APIRouter(prefix="/invoices", tags=["Invoices"])
 
 
 # =========================
-# GET INVOICES (ONLY USER)
+# GET ALL (USER ONLY)
 # =========================
 @router.get("/")
 def get_invoices(
@@ -23,7 +23,7 @@ def get_invoices(
 
 
 # =========================
-# CREATE INVOICE (WITH LIMIT)
+# CREATE INVOICE (SAFE + LIMIT)
 # =========================
 @router.post("/")
 def create_invoice(
@@ -32,26 +32,45 @@ def create_invoice(
     current_user: User = Depends(get_current_user)
 ):
 
-    # 🔒 FREE PLAN LIMIT
-    if not current_user.is_premium and current_user.invoice_count >= 5:
+    client = data.get("client")
+    amount = data.get("amount")
+    description = data.get("description", "")
+    status = data.get("status", "Pending")
+
+    # =========================
+    # VALIDATION
+    # =========================
+    if not client:
+        raise HTTPException(status_code=400, detail="Client is required")
+
+    if amount is None or amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+
+    # =========================
+    # FREE PLAN LIMIT
+    # =========================
+    invoice_count = db.query(Invoice).filter(
+        Invoice.owner_id == current_user.id
+    ).count()
+
+    if not current_user.is_premium and invoice_count >= 5:
         raise HTTPException(
             status_code=403,
             detail="Free plan limit reached (5 invoices). Upgrade to premium."
         )
 
+    # =========================
+    # CREATE
+    # =========================
     new_invoice = Invoice(
-        title=data.get("title"),
-        description=data.get("description"),
-        amount=data.get("amount"),
-        currency=data.get("currency", "EUR"),
+        client=client,
+        amount=amount,
+        description=description,
+        status=status,
         owner_id=current_user.id
     )
 
     db.add(new_invoice)
-
-    # update usage counter
-    current_user.invoice_count += 1
-
     db.commit()
     db.refresh(new_invoice)
 
@@ -59,7 +78,7 @@ def create_invoice(
 
 
 # =========================
-# GET SINGLE INVOICE (SECURE)
+# GET ONE (SECURE)
 # =========================
 @router.get("/{invoice_id}")
 def get_invoice(
@@ -80,35 +99,7 @@ def get_invoice(
 
 
 # =========================
-# DELETE INVOICE (SECURE)
-# =========================
-@router.delete("/{invoice_id}")
-def delete_invoice(
-    invoice_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-
-    invoice = db.query(Invoice).filter(
-        Invoice.id == invoice_id,
-        Invoice.owner_id == current_user.id
-    ).first()
-
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
-    db.delete(invoice)
-
-    # decrease counter
-    current_user.invoice_count -= 1
-
-    db.commit()
-
-    return {"message": "Invoice deleted"}
-
-
-# =========================
-# UPDATE INVOICE (SECURE)
+# UPDATE (SAFE)
 # =========================
 @router.put("/{invoice_id}")
 def update_invoice(
@@ -126,12 +117,45 @@ def update_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    invoice.title = data.get("title", invoice.title)
-    invoice.description = data.get("description", invoice.description)
-    invoice.amount = data.get("amount", invoice.amount)
-    invoice.currency = data.get("currency", invoice.currency)
+    if "client" in data:
+        invoice.client = data["client"]
+
+    if "amount" in data:
+        if data["amount"] <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be > 0")
+        invoice.amount = data["amount"]
+
+    if "description" in data:
+        invoice.description = data["description"]
+
+    if "status" in data:
+        invoice.status = data["status"]
 
     db.commit()
     db.refresh(invoice)
 
     return invoice
+
+
+# =========================
+# DELETE (SECURE)
+# =========================
+@router.delete("/{invoice_id}")
+def delete_invoice(
+    invoice_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+
+    invoice = db.query(Invoice).filter(
+        Invoice.id == invoice_id,
+        Invoice.owner_id == current_user.id
+    ).first()
+
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    db.delete(invoice)
+    db.commit()
+
+    return {"message": "Invoice deleted"}

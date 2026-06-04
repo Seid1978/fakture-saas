@@ -1,41 +1,54 @@
 import os
 from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
 
 from database import Base, engine
 
+# =========================
+# ENV
+# =========================
 load_dotenv()
 
-
 # =========================
-# MODELS
+# MODELS (ENSURE TABLES EXIST)
 # =========================
 from models.user import User
 from models.invoice import Invoice
-
 
 # =========================
 # ROUTES
 # =========================
 from auth.auth import router as auth_router
 from routes.invoices import router as invoices_router
-from routes.payment import router as stripe_router
-from routes.stripe_webhook import router as stripe_webhook_router
-from routes.user import router as user_router
+from routes.payment import router as payment_router
+from routes.webhook import router as webhook_router
+from routes.user_routes import router as user_router
 
 
 # =========================
-# LIFESPAN (NEW WAY)
+# LIFESPAN
 # =========================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    print("🚀 Starting Invoice SaaS API...")
+
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("✅ Database initialized successfully")
+    except Exception as e:
+        print(f"❌ Database init error: {e}")
+
     yield
 
+    print("🛑 Shutting down API...")
 
+
+# =========================
+# APP
+# =========================
 app = FastAPI(
     title="Invoice SaaS API 🚀",
     version="1.0.0",
@@ -48,9 +61,7 @@ app = FastAPI(
 # =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        os.getenv("FRONTEND_URL", "http://localhost:5173"),
-    ],
+    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,14 +73,8 @@ app.add_middleware(
 # =========================
 app.include_router(auth_router, prefix="/auth", tags=["Auth"])
 app.include_router(invoices_router, prefix="/invoices", tags=["Invoices"])
-app.include_router(stripe_router, prefix="/stripe", tags=["Stripe"])
-
-app.include_router(
-    stripe_webhook_router,
-    prefix="/stripe/webhook",
-    tags=["Stripe Webhook"]
-)
-
+app.include_router(payment_router, prefix="/payments", tags=["Payments"])
+app.include_router(webhook_router, prefix="/webhook", tags=["Webhook"])
 app.include_router(user_router, prefix="/user", tags=["User"])
 
 

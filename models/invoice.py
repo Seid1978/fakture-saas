@@ -1,6 +1,5 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey
-from sqlalchemy.orm import relationship
-
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime
+from datetime import datetime
 from database import Base
 
 
@@ -11,11 +10,10 @@ class Invoice(Base):
 
     client = Column(String, nullable=False)
     amount = Column(Float, nullable=False)
-    status = Column(String, default="Pending")
-    date = Column(String, nullable=True)
 
-    # 🔗 owner (FK)
-    owner_id = Column(Integer, ForeignKey("users.id"))
+    # SaaS v5: workflow
+    status = Column(String, default="Pending")  # Pending, Paid, Cancelled
 
-    # 🔥 relationship (BITNO ZA SAAS)
-    owner = relationship("User", back_populates="invoices")
+    user_id = Column(Integer, ForeignKey("users.id"))
+
+    created_at = Column(DateTime, default=datetime.utcnow)
