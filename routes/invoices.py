@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models.invoice import Invoice
-from auth.auth import get_current_user
 from models.user import User
+from auth.auth import get_current_user
 
 router = APIRouter(prefix="/invoices", tags=["Invoices"])
 
@@ -18,12 +18,12 @@ def get_invoices(
     current_user: User = Depends(get_current_user)
 ):
     return db.query(Invoice).filter(
-        Invoice.owner_id == current_user.id
+        Invoice.user_id == current_user.id
     ).all()
 
 
 # =========================
-# CREATE INVOICE (SAFE + LIMIT)
+# CREATE INVOICE (LIMIT + SAFE)
 # =========================
 @router.post("/")
 def create_invoice(
@@ -44,20 +44,21 @@ def create_invoice(
         raise HTTPException(status_code=400, detail="Client is required")
 
     if amount is None or amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+        raise HTTPException(status_code=400, detail="Amount must be > 0")
 
     # =========================
     # FREE PLAN LIMIT
     # =========================
-    invoice_count = db.query(Invoice).filter(
-        Invoice.owner_id == current_user.id
-    ).count()
+    if not current_user.is_premium:
+        invoice_count = db.query(Invoice).filter(
+            Invoice.user_id == current_user.id
+        ).count()
 
-    if not current_user.is_premium and invoice_count >= 5:
-        raise HTTPException(
-            status_code=403,
-            detail="Free plan limit reached (5 invoices). Upgrade to premium."
-        )
+        if invoice_count >= current_user.invoice_limit:
+            raise HTTPException(
+                status_code=403,
+                detail="Free plan limit reached (5 invoices). Upgrade to premium."
+            )
 
     # =========================
     # CREATE
@@ -65,9 +66,8 @@ def create_invoice(
     new_invoice = Invoice(
         client=client,
         amount=amount,
-        description=description,
         status=status,
-        owner_id=current_user.id
+        user_id=current_user.id
     )
 
     db.add(new_invoice)
@@ -89,7 +89,7 @@ def get_invoice(
 
     invoice = db.query(Invoice).filter(
         Invoice.id == invoice_id,
-        Invoice.owner_id == current_user.id
+        Invoice.user_id == current_user.id
     ).first()
 
     if not invoice:
@@ -111,7 +111,7 @@ def update_invoice(
 
     invoice = db.query(Invoice).filter(
         Invoice.id == invoice_id,
-        Invoice.owner_id == current_user.id
+        Invoice.user_id == current_user.id
     ).first()
 
     if not invoice:
@@ -124,9 +124,6 @@ def update_invoice(
         if data["amount"] <= 0:
             raise HTTPException(status_code=400, detail="Amount must be > 0")
         invoice.amount = data["amount"]
-
-    if "description" in data:
-        invoice.description = data["description"]
 
     if "status" in data:
         invoice.status = data["status"]
@@ -149,7 +146,7 @@ def delete_invoice(
 
     invoice = db.query(Invoice).filter(
         Invoice.id == invoice_id,
-        Invoice.owner_id == current_user.id
+        Invoice.user_id == current_user.id
     ).first()
 
     if not invoice:

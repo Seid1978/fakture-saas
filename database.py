@@ -1,10 +1,13 @@
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
-import os
 
+# =========================
+# DATABASE URL
+# =========================
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "sqlite:///./faktura.db"  # fallback za dev
+    "sqlite:///./faktura.db"  # default za development
 )
 
 # =========================
@@ -16,8 +19,7 @@ if DATABASE_URL.startswith("sqlite"):
         connect_args={"check_same_thread": False}
     )
 else:
-    engine = create_engine(DATABASE_URL)
-
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 # =========================
 # SESSION
@@ -28,8 +30,17 @@ SessionLocal = sessionmaker(
     bind=engine
 )
 
-
 # =========================
-# BASE
+# BASE (SINGLE SOURCE OF TRUTH)
 # =========================
 Base = declarative_base()
+
+# =========================
+# DEPENDENCY (FastAPI)
+# =========================
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

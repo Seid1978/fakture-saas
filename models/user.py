@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, Boolean
+from sqlalchemy.orm import relationship
 from database import Base
 
 
@@ -23,12 +24,21 @@ class User(Base):
     is_premium = Column(Boolean, default=False)
 
     # =========================
-    # SAAS LIMITS (V4)
+    # SAAS LIMITS
     # =========================
     invoice_limit = Column(Integer, default=5)
 
     # =========================
-    # STRIPE / LEMON SQUEEZY SUPPORT
+    # STRIPE / SUBSCRIPTION
     # =========================
     stripe_customer_id = Column(String, nullable=True)
     stripe_subscription_id = Column(String, nullable=True)
+
+    # =========================
+    # RELATION TO INVOICES (CRITICAL FOR SAAS)
+    # =========================
+    invoices = relationship(
+        "Invoice",
+        back_populates="owner",
+        cascade="all, delete"
+    )
